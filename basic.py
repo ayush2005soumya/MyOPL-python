@@ -122,6 +122,9 @@ TT_COMMA			= 'COMMA'
 TT_ARROW			= 'ARROW'
 TT_NEWLINE		= 'NEWLINE'
 TT_EOF				= 'EOF'
+TT_LBRACE    = 'LBRACE'   # <-- add
+TT_RBRACE    = 'RBRACE'   # <-- add
+TT_COLON     = 'COLON'
 
 KEYWORDS = [
   'VAR',
@@ -221,6 +224,15 @@ class Lexer:
         self.advance()
       elif self.current_char == ']':
         tokens.append(Token(TT_RSQUARE, pos_start=self.pos))
+        self.advance()
+      elif self.current_char == '{':
+        tokens.append(Token(TT_LBRACE, pos_start=self.pos))
+        self.advance()
+      elif self.current_char == '}':
+        tokens.append(Token(TT_RBRACE, pos_start=self.pos))
+        self.advance()
+      elif self.current_char == ':':
+        tokens.append(Token(TT_COLON, pos_start=self.pos))
         self.advance()
       elif self.current_char == '!':
         token, error = self.make_not_equals()
@@ -390,6 +402,24 @@ class ListNode:
 
     self.pos_start = pos_start
     self.pos_end = pos_end
+
+class DictNode:
+    def __init__(self, pairs, pos_start, pos_end):
+        self.pairs = pairs
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+
+class SetNode:
+    def __init__(self, elements, pos_start, pos_end):
+        self.elements = elements
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+
+class TupleNode:
+    def __init__(self, elements, pos_start, pos_end):
+        self.elements = elements
+        self.pos_start = pos_start
+        self.pos_end = pos_end
 
 class VarAccessNode:
   def __init__(self, var_name_tok):
@@ -785,20 +815,41 @@ class Parser:
       self.advance()
       return res.success(VarAccessNode(tok))
 
+    elif tok.type == TT_LBRACE:
+            node = res.register(self.dict_or_set_expr())
+            if res.error: return res
+            return res.success(node)
+
     elif tok.type == TT_LPAREN:
-      res.register_advancement()
-      self.advance()
-      expr = res.register(self.expr())
-      if res.error: return res
-      if self.current_tok.type == TT_RPAREN:
-        res.register_advancement()
-        self.advance()
-        return res.success(expr)
-      else:
-        return res.failure(InvalidSyntaxError(
-          self.current_tok.pos_start, self.current_tok.pos_end,
-          "Expected ')'"
-        ))
+            res.register_advancement()
+            self.advance()
+            expr = res.register(self.expr())
+            if res.error: return res
+            if self.current_tok.type == TT_COMMA:
+                # Tuple
+                elements = [expr]
+                while self.current_tok.type == TT_COMMA:
+                    res.register_advancement()
+                    self.advance()
+                    elements.append(res.register(self.expr()))
+                    if res.error: return res
+                if self.current_tok.type != TT_RPAREN:
+                    return res.failure(InvalidSyntaxError(
+                        self.current_tok.pos_start, self.current_tok.pos_end,
+                        "Expected ')'"
+                    ))
+                res.register_advancement()
+                self.advance()
+                return res.success(TupleNode(elements, tok.pos_start, self.current_tok.pos_end.copy()))
+            else:
+                if self.current_tok.type != TT_RPAREN:
+                    return res.failure(InvalidSyntaxError(
+                        self.current_tok.pos_start, self.current_tok.pos_end,
+                        "Expected ')'"
+                    ))
+                res.register_advancement()
+                self.advance()
+                return res.success(expr)
 
     elif tok.type == TT_LSQUARE:
       list_expr = res.register(self.list_expr())
@@ -876,6 +927,72 @@ class Parser:
       pos_start,
       self.current_tok.pos_end.copy()
     ))
+  def dict_or_set_expr(self):
+        res = ParseResult()
+        pairs = []
+        elements = []
+        pos_start = self.current_tok.pos_start.copy()
+
+        if self.current_tok.type != TT_LBRACE:
+            return res.failure(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Expected '{'"
+            ))
+        res.register_advancement()
+        self.advance()
+
+        if self.current_tok.type == TT_RBRACE:
+            res.register_advancement()
+            self.advance()
+            return res.success(DictNode([], pos_start, self.current_tok.pos_end.copy()))
+
+        first_expr = res.register(self.expr())
+        if res.error: return res
+
+        if self.current_tok.type == TT_COLON:
+            # Dict
+            while True:
+                res.register_advancement()
+                self.advance()
+                value_expr = res.register(self.expr())
+                if res.error: return res
+                pairs.append((first_expr, value_expr))
+                if self.current_tok.type == TT_COMMA:
+                    res.register_advancement()
+                    self.advance()
+                    first_expr = res.register(self.expr())
+                    if res.error: return res
+                    if self.current_tok.type != TT_COLON:
+                        return res.failure(InvalidSyntaxError(
+                            self.current_tok.pos_start, self.current_tok.pos_end,
+                            "Expected ':'"
+                        ))
+                else:
+                    break
+            if self.current_tok.type != TT_RBRACE:
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected '}'"
+                ))
+            res.register_advancement()
+            self.advance()
+            return res.success(DictNode(pairs, pos_start, self.current_tok.pos_end.copy()))
+        else:
+            # Set
+            elements.append(first_expr)
+            while self.current_tok.type == TT_COMMA:
+                res.register_advancement()
+                self.advance()
+                elements.append(res.register(self.expr()))
+                if res.error: return res
+            if self.current_tok.type != TT_RBRACE:
+                return res.failure(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    "Expected '}'"
+                ))
+            res.register_advancement()
+            self.advance()
+            return res.success(SetNode(elements, pos_start, self.current_tok.pos_end.copy()))
 
   def if_expr(self):
     res = ParseResult()
@@ -1487,6 +1604,12 @@ class Number(Value):
   def __str__(self):
     return str(self.value)
   
+  def __eq__(self, other):
+        return isinstance(other, Number) and self.value == other.value
+
+  def __hash__(self):
+        return hash(self.value)
+  
   def __repr__(self):
     return str(self.value)
 
@@ -1523,6 +1646,12 @@ class String(Value):
 
   def __str__(self):
     return self.value
+  
+  def __eq__(self, other):
+        return isinstance(other, Number) and self.value == other.value
+
+  def __hash__(self):
+        return hash(self.value)
 
   def __repr__(self):
     return f'"{self.value}"'
@@ -1584,6 +1713,54 @@ class List(Value):
 
   def __repr__(self):
     return f'[{", ".join([repr(x) for x in self.elements])}]'
+
+class Dict(Value):
+    def __init__(self, pairs):
+        super().__init__()
+        self.pairs = dict(pairs)
+
+    def copy(self):
+        copy = Dict(list(self.pairs.items()))
+        copy.set_pos(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+
+    def __repr__(self):
+        return '{' + ', '.join([f'{repr(k)}: {repr(v)}' for k, v in self.pairs.items()]) + '}'
+
+class Set(Value):
+    def __init__(self, elements):
+        super().__init__()
+        self.elements = set(elements)
+
+    def copy(self):
+        copy = Set(list(self.elements))
+        copy.set_pos(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+
+    def __repr__(self):
+        return '{' + ', '.join([repr(x) for x in self.elements]) + '}'
+
+class Tuple(Value):
+    def __init__(self, elements):
+        super().__init__()
+        self.elements = tuple(elements)
+
+    def copy(self):
+        copy = Tuple(list(self.elements))
+        copy.set_pos(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+    
+    def __eq__(self, other):
+        return isinstance(other, Tuple) and self.elements == other.elements
+
+    def __hash__(self):
+        return hash(self.elements)
+
+    def __repr__(self):
+        return '(' + ', '.join([repr(x) for x in self.elements]) + ')'
 
 class BaseFunction(Value):
   def __init__(self, name):
@@ -1854,6 +2031,60 @@ class BuiltInFunction(BaseFunction):
     return RTResult().success(Number.null)
   execute_run.arg_names = ["fn"]
 
+  def execute_dict_keys(self, exec_ctx):
+        d = exec_ctx.symbol_table.get("dict")
+        if not isinstance(d, Dict):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "Argument must be dict", exec_ctx))
+        return RTResult().success(List(list(d.pairs.keys())))
+  execute_dict_keys.arg_names = ["dict"]
+
+  def execute_dict_values(self, exec_ctx):
+        d = exec_ctx.symbol_table.get("dict")
+        if not isinstance(d, Dict):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "Argument must be dict", exec_ctx))
+        return RTResult().success(List(list(d.pairs.values())))
+  execute_dict_values.arg_names = ["dict"]
+
+  def execute_dict_items(self, exec_ctx):
+        d = exec_ctx.symbol_table.get("dict")
+        if not isinstance(d, Dict):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "Argument must be dict", exec_ctx))
+        return RTResult().success(List([Tuple([k, v]) for k, v in d.pairs.items()]))
+  execute_dict_items.arg_names = ["dict"]
+
+    # --- Set built-ins ---
+  def execute_set_add(self, exec_ctx):
+        s = exec_ctx.symbol_table.get("set")
+        value = exec_ctx.symbol_table.get("value")
+        if not isinstance(s, Set):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "First argument must be set", exec_ctx))
+        s.elements.add(value)
+        return RTResult().success(Number.null)
+  execute_set_add.arg_names = ["set", "value"]
+
+  def execute_set_remove(self, exec_ctx):
+        s = exec_ctx.symbol_table.get("set")
+        value = exec_ctx.symbol_table.get("value")
+        if not isinstance(s, Set):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "First argument must be set", exec_ctx))
+        s.elements.discard(value)
+        return RTResult().success(Number.null)
+  execute_set_remove.arg_names = ["set", "value"]
+
+    # --- Tuple built-ins ---
+  def execute_tuple_get(self, exec_ctx):
+        t = exec_ctx.symbol_table.get("tuple")
+        idx = exec_ctx.symbol_table.get("index")
+        if not isinstance(t, Tuple):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "First argument must be tuple", exec_ctx))
+        if not isinstance(idx, Number):
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "Second argument must be number", exec_ctx))
+        try:
+            return RTResult().success(t.elements[int(idx.value)])
+        except Exception:
+            return RTResult().failure(RTError(self.pos_start, self.pos_end, "Index out of range", exec_ctx))
+  execute_tuple_get.arg_names = ["tuple", "index"]
+
 BuiltInFunction.print       = BuiltInFunction("print")
 BuiltInFunction.print_ret   = BuiltInFunction("print_ret")
 BuiltInFunction.input       = BuiltInFunction("input")
@@ -1868,6 +2099,12 @@ BuiltInFunction.pop         = BuiltInFunction("pop")
 BuiltInFunction.extend      = BuiltInFunction("extend")
 BuiltInFunction.len					= BuiltInFunction("len")
 BuiltInFunction.run					= BuiltInFunction("run")
+BuiltInFunction.dict_keys   = BuiltInFunction("dict_keys")
+BuiltInFunction.dict_values = BuiltInFunction("dict_values")
+BuiltInFunction.dict_items  = BuiltInFunction("dict_items")
+BuiltInFunction.set_add     = BuiltInFunction("set_add")
+BuiltInFunction.set_remove  = BuiltInFunction("set_remove")
+BuiltInFunction.tuple_get   = BuiltInFunction("tuple_get")
 
 #######################################
 # CONTEXT
@@ -1937,6 +2174,36 @@ class Interpreter:
     return res.success(
       List(elements).set_context(context).set_pos(node.pos_start, node.pos_end)
     )
+  
+  def visit_DictNode(self, node, context):
+        res = RTResult()
+        pairs = []
+        for k_node, v_node in node.pairs:
+            k = res.register(self.visit(k_node, context))
+            if res.should_return(): return res
+            v = res.register(self.visit(v_node, context))
+            if res.should_return(): return res
+            pairs.append((k, v))
+        return res.success(Dict(pairs).set_context(context).set_pos(node.pos_start, node.pos_end))
+
+  def visit_SetNode(self, node, context):
+        res = RTResult()
+        elements = []
+        for elem_node in node.elements:
+            elem = res.register(self.visit(elem_node, context))
+            if res.should_return(): return res
+            elements.append(elem)
+        return res.success(Set(elements).set_context(context).set_pos(node.pos_start, node.pos_end))
+
+  def visit_TupleNode(self, node, context):
+        res = RTResult()
+        elements = []
+        for elem_node in node.elements:
+            elem = res.register(self.visit(elem_node, context))
+            if res.should_return(): return res
+            elements.append(elem)
+        return res.success(Tuple(elements).set_context(context).set_pos(node.pos_start, node.pos_end))
+
 
   def visit_VarAccessNode(self, node, context):
     res = RTResult()
@@ -1950,7 +2217,11 @@ class Interpreter:
         context
       ))
 
-    value = value.copy().set_pos(node.pos_start, node.pos_end).set_context(context)
+    # value = value.copy().set_pos(node.pos_start, node.pos_end).set_context(context)
+    if isinstance(value, (Number, String, Tuple)):
+      value = value.copy().set_pos(node.pos_start, node.pos_end).set_context(context)
+    else:
+      value.set_pos(node.pos_start, node.pos_end).set_context(context)
     return res.success(value)
 
   def visit_VarAssignNode(self, node, context):
@@ -2178,6 +2449,12 @@ global_symbol_table.set("APPEND", BuiltInFunction.append)
 global_symbol_table.set("POP", BuiltInFunction.pop)
 global_symbol_table.set("EXTEND", BuiltInFunction.extend)
 global_symbol_table.set("LEN", BuiltInFunction.len)
+global_symbol_table.set("DICT_KEYS", BuiltInFunction.dict_keys)
+global_symbol_table.set("DICT_VALUES", BuiltInFunction.dict_values)
+global_symbol_table.set("DICT_ITEMS", BuiltInFunction.dict_items)
+global_symbol_table.set("SET_ADD", BuiltInFunction.set_add)
+global_symbol_table.set("SET_REMOVE", BuiltInFunction.set_remove)
+global_symbol_table.set("TUPLE_GET", BuiltInFunction.tuple_get)
 global_symbol_table.set("RUN", BuiltInFunction.run)
 
 def run(fn, text):
